@@ -17,7 +17,7 @@ use windows_sys::Win32::{
         WindowsAndMessaging::{
             EnumWindows, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
             GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow, IsWindowArranged, IsWindowVisible, IsZoomed,
-            SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, SWP_NOACTIVATE,
+            SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
             SWP_NOOWNERZORDER, SWP_NOZORDER, SW_SHOWNOACTIVATE,
         },
     },
@@ -275,8 +275,10 @@ pub fn unsnap(hwnd: isize) -> bool {
     true
 }
 
-/// Move a window so its *visible* frame lands exactly on `target`.
-pub fn place(hwnd: isize, target: Rect, frame: Frame) {
+/// Move a window so its *visible* frame lands exactly on `target`. With
+/// `wait` false the request is queued to the window's own thread and this
+/// returns at once, so many windows can move in parallel.
+pub fn place(hwnd: isize, target: Rect, frame: Frame, wait: bool) {
     let (v, o) = (frame.visible, frame.outer);
     let (left, top) = (v.x - o.x, v.y - o.y);
     let (right, bottom) = (o.right() - v.right(), o.bottom() - v.bottom());
@@ -288,7 +290,7 @@ pub fn place(hwnd: isize, target: Rect, frame: Frame) {
             target.y - top,
             target.w + left + right,
             target.h + top + bottom,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | if wait { 0 } else { SWP_ASYNCWINDOWPOS },
         );
     }
 }

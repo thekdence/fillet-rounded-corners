@@ -29,8 +29,11 @@ const TABS: { value: Tab; label: string }[] = [
   { value: "shortcuts", label: "Shortcuts" },
 ];
 
-/** Sliders fire on every pixel; save once they settle. */
-const SAVE_DELAY_MS = 120;
+/** Changes reach the engine at most once a frame, so windows follow a slider
+ * as it's dragged. The engine paces each app to what it can keep up with. */
+const LIVE_MS = 16;
+/** Sliders fire on every pixel; only save to disk once they settle. */
+const SAVE_DELAY_MS = 300;
 
 export default function App() {
   const [config, setLocal] = useState<Config | null>(null);
@@ -40,11 +43,20 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("appearance");
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // The latest config, readable from timers without waiting for a render.
+  const latest = useRef<Config | null>(null);
+  const liveTimer = useRef<number>(undefined);
+  const lastLive = useRef(0);
   const saveTimer = useRef<number>(undefined);
+
+  const show = useCallback((next: Config) => {
+    latest.current = next;
+    setLocal(next);
+  }, []);
 
   useEffect(() => {
     getState().then((s) => {
-      setLocal(s.config);
+      show(s.config);
       setConflicts(s.conflicts);
       setStartup(s.startWithWindows);
       setVersion(s.version);
@@ -53,11 +65,11 @@ export default function App() {
     }, (e) => setError(String(e)));
 
     const unlisten = [
-      listen<Config>("config", (e) => setLocal(e.payload)),
+      listen<Config>("config", (e) => show(e.payload)),
       listen<Action[]>("conflicts", (e) => setConflicts(e.payload)),
     ];
     return () => unlisten.forEach((p) => p.then((off) => off()));
-  }, []);
+  }, [show]);
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => {
@@ -73,20 +85,34 @@ export default function App() {
     return () => clearTimeout(id);
   }, [toast]);
 
-  const update = useCallback((patch: Partial<Config>) => {
-    setLocal((prev) => {
-      if (!prev) return prev;
-      const next = { ...prev, ...patch };
-      clearTimeout(saveTimer.current);
-      saveTimer.current = window.setTimeout(() => {
-        setConfig(next).then(
-          () => setError(null),
-          (e) => setError(String(e)),
-        );
-      }, SAVE_DELAY_MS);
-      return next;
-    });
+  const send = useCallback((persist: boolean) => {
+    if (!latest.current) return;
+    setConfig(latest.current, persist).then(
+      () => setError(null),
+      (e) => setError(String(e)),
+    );
   }, []);
+
+  const sendLive = useCallback(() => {
+    liveTimer.current = undefined;
+    lastLive.current = performance.now();
+    send(false);
+  }, [send]);
+
+  const update = useCallback(
+    (patch: Partial<Config>) => {
+      if (!latest.current) return;
+      show({ ...latest.current, ...patch });
+      // Apply now (throttled) so the desktop moves with the slider...
+      const wait = LIVE_MS - (performance.now() - lastLive.current);
+      if (wait <= 0) sendLive();
+      else if (liveTimer.current === undefined) liveTimer.current = window.setTimeout(sendLive, wait);
+      // ...and save once things settle.
+      clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(() => send(true), SAVE_DELAY_MS);
+    },
+    [show, send, sendLive],
+  );
 
   const setHotkeys = useCallback((hotkeys: Hotkeys) => update({ hotkeys }), [update]);
 

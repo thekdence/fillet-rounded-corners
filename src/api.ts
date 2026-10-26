@@ -66,7 +66,8 @@ export const DEFAULT_HOTKEYS: Hotkeys = {
 };
 
 export const getState = () => invoke<Snapshot>("get_state");
-export const setConfig = (config: Config) => invoke<Config>("set_config", { config });
+/** Apply a config now; `persist` also saves it to disk. */
+export const setConfig = (config: Config, persist: boolean) => invoke<Config>("set_config", { config, persist });
 export const setStartWithWindows = (enabled: boolean) => invoke<boolean>("set_start_with_windows", { enabled });
 export const runningApps = () => invoke<RunningApp[]>("running_apps");
 export const runAction = (action: Action) => invoke<void>("run_action", { action });

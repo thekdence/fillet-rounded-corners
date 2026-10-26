@@ -33,14 +33,21 @@ impl App {
         self.config.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    fn update(&self, app: &AppHandle, next: Config) -> Result<Config, String> {
+    /// Apply a config right away. While a slider is being dragged the UI
+    /// sends many of these with `persist` off, then one to save.
+    fn update(&self, next: Config, persist: bool) -> Result<Config, String> {
         let next = next.normalized();
-        next.save(&self.config_path).map_err(|e| format!("Couldn't save settings: {e}"))?;
+        if persist {
+            self.save(&next)?;
+        }
         *self.config.lock().unwrap_or_else(|e| e.into_inner()) = next.clone();
         self.engine.reload();
         let _ = self.pause_item.set_text(pause_label(next.enabled));
-        let _ = app.emit_to(SETTINGS, "config", &next);
         Ok(next)
+    }
+
+    fn save(&self, config: &Config) -> Result<(), String> {
+        config.save(&self.config_path).map_err(|e| format!("Couldn't save settings: {e}"))
     }
 }
 
@@ -72,8 +79,8 @@ fn get_state(app: AppHandle, state: tauri::State<'_, App>) -> Snapshot {
 }
 
 #[tauri::command]
-fn set_config(app: AppHandle, state: tauri::State<'_, App>, config: Config) -> Result<Config, String> {
-    state.update(&app, config)
+fn set_config(state: tauri::State<'_, App>, config: Config, persist: bool) -> Result<Config, String> {
+    state.update(config, persist)
 }
 
 #[tauri::command]
@@ -124,6 +131,15 @@ fn open_settings(app: &AppHandle) {
         .visible(false)
         .build();
     if let Ok(window) = built {
+        // Closing mid-drag can beat the UI's final save; make sure the
+        // settings on screen are the ones on disk.
+        let handle = app.clone();
+        window.on_window_event(move |event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                let state = handle.state::<App>();
+                let _ = state.save(&state.config());
+            }
+        });
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(1500));
             let _ = window.show();
@@ -135,7 +151,10 @@ fn toggle_pause(app: &AppHandle) {
     let state = app.state::<App>();
     let mut next = state.config();
     next.enabled = !next.enabled;
-    let _ = state.update(app, next);
+    if let Ok(next) = state.update(next, true) {
+        // The settings window, if open, didn't make this change itself.
+        let _ = app.emit_to(SETTINGS, "config", &next);
+    }
 }
 
 fn build_tray(app: &AppHandle, pause_item: &MenuItem<Wry>) -> tauri::Result<()> {

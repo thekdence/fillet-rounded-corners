@@ -43,6 +43,13 @@ const WM_SUSPEND_HOTKEYS: u32 = WM_APP + 3;
 const WM_SHUTDOWN: u32 = WM_APP + 4;
 
 const FLUSH_TIMER: usize = 1;
+const SETTLE_TIMER: usize = 2;
+/// Once a spacing slider has rested this long, windows get their final,
+/// pixel-exact placement.
+const SETTLE_DELAY_MS: u32 = 220;
+/// How long a window may take over one live move before it's sent the next
+/// regardless (it may simply be unable to reach that size).
+const LIVE_CATCH_UP: Duration = Duration::from_millis(120);
 /// Long enough to fold a burst of events (show, focus, resize) into one pass,
 /// short enough that it feels instant.
 const FLUSH_DELAY_MS: u32 = 90;
@@ -146,9 +153,12 @@ struct State {
     styled: HashSet<isize>,
     /// Windows we clipped to a rounded region, and the size we clipped at.
     clipped: HashMap<isize, (i32, i32)>,
-    /// Where we last put each window and when, so a window that refuses a
-    /// size can't send us into a loop.
+    /// Where automatic tidying last put each window and when, so a window
+    /// that refuses a size can't send us into a loop.
     placed: HashMap<isize, (Rect, Instant)>,
+    /// Windows following a spacing slider as it's dragged: their layout,
+    /// and the last move we asked of them.
+    live: HashMap<isize, (Layout, Option<(Rect, Instant)>)>,
     names: HashMap<u32, Option<String>>,
 }
 
@@ -198,6 +208,7 @@ fn run(shared: Arc<Mutex<Config>>, on_conflicts: ConflictFn, ready: mpsc::Sender
             styled: HashSet::new(),
             clipped: HashMap::new(),
             placed: HashMap::new(),
+            live: HashMap::new(),
             names: HashMap::new(),
         };
         state.activate();
@@ -216,6 +227,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_TIMER if wparam == FLUSH_TIMER => {
             unsafe { KillTimer(hwnd, FLUSH_TIMER) };
             with_state(State::flush)
+        }
+        WM_TIMER if wparam == SETTLE_TIMER => {
+            unsafe { KillTimer(hwnd, SETTLE_TIMER) };
+            with_state(State::settle)
         }
         WM_HOTKEY => {
             let action = Action::ALL.get((wparam as usize).wrapping_sub(1)).copied();
@@ -358,6 +373,7 @@ impl State {
         }
         self.unregister_hotkeys();
         self.unstyle_all();
+        self.live.clear();
         PENDING.with(|p| p.borrow_mut().clear());
         PENDING_SINCE.set(None);
     }
@@ -394,18 +410,55 @@ impl State {
             self.style_all();
         }
 
-        // Windows sitting in a layout with the old spacing move to the new
-        // spacing, so dragging the slider updates the desktop live.
         if prev.margin != next.margin || prev.gap != next.gap {
-            for hwnd in win::top_level_windows() {
-                if !self.can_arrange(hwnd) || win::is_maximized(hwnd) {
+            self.respace(&prev);
+        }
+    }
+
+    /// Windows sitting in a layout with the old spacing follow the new one,
+    /// so dragging a slider moves the desktop with it.
+    fn respace(&mut self, prev: &Config) {
+        // Windows already following the drag may still be mid-move, so they
+        // keep their layout instead of being measured again.
+        for hwnd in win::top_level_windows() {
+            if self.live.contains_key(&hwnd) || !self.can_arrange(hwnd) || win::is_maximized(hwnd) {
+                continue;
+            }
+            let (Some(frame), Some(mon)) = (win::frame(hwnd), win::monitor(hwnd)) else { continue };
+            let (m, g) = spacing(prev, mon.scale);
+            if let Some(layout) = Layout::current(frame.visible, mon.work, m, g) {
+                self.live.insert(hwnd, (layout, None));
+            }
+        }
+        // Ask every window to move at once rather than waiting on each app
+        // in turn; that's what keeps a drag smooth.
+        let hwnds: Vec<isize> = self.live.keys().copied().collect();
+        for hwnd in hwnds {
+            let (Some(frame), Some(mon)) = (win::frame(hwnd), win::monitor(hwnd)) else {
+                self.live.remove(&hwnd);
+                continue;
+            };
+            let Some((layout, sent)) = self.live.get_mut(&hwnd) else { continue };
+            // An app still working through its last move gets skipped this
+            // tick, so slow apps never build up a backlog of stale sizes.
+            if let Some((last, at)) = sent {
+                if !frame.visible.near(last, 1) && at.elapsed() < LIVE_CATCH_UP {
                     continue;
                 }
-                let (Some(frame), Some(mon)) = (win::frame(hwnd), win::monitor(hwnd)) else { continue };
-                let (m, g) = spacing(&prev, mon.scale);
-                if let Some(layout) = Layout::current(frame.visible, mon.work, m, g) {
-                    self.put(hwnd, layout);
-                }
+            }
+            let (m, g) = spacing(&self.cfg, mon.scale);
+            let target = layout.bounds(mon.work, m, g);
+            win::place(hwnd, target, frame, false);
+            *sent = Some((target, Instant::now()));
+        }
+        unsafe { SetTimer(self.hwnd as HWND, SETTLE_TIMER, SETTLE_DELAY_MS, None) };
+    }
+
+    /// The slider has come to rest: place each window exactly.
+    fn settle(&mut self) {
+        for (hwnd, (layout, _)) in mem::take(&mut self.live) {
+            if win::exists(hwnd) && self.can_arrange(hwnd) {
+                self.put(hwnd, layout);
             }
         }
     }
@@ -581,12 +634,14 @@ impl State {
         self.styled.remove(&hwnd);
         self.clipped.remove(&hwnd);
         self.placed.remove(&hwnd);
+        self.live.remove(&hwnd);
     }
 
     /// Give a window that was just snapped or maximised its gaps.
     fn auto_tidy(&mut self, hwnd: isize) {
         let (auto, pad_max) = (self.cfg.auto_tidy, self.cfg.pad_maximized);
-        if !(auto || pad_max) || !win::is_resizable(hwnd) || !self.can_arrange(hwnd) {
+        // Windows following a slider drag already have somewhere to be.
+        if !(auto || pad_max) || self.live.contains_key(&hwnd) || !win::is_resizable(hwnd) || !self.can_arrange(hwnd) {
             return;
         }
         let (Some(frame), Some(mon)) = (win::frame(hwnd), win::monitor(hwnd)) else { return };
@@ -599,8 +654,21 @@ impl State {
         } else {
             None
         };
-        if let Some(layout) = layout {
-            self.put(hwnd, layout);
+        let Some(layout) = layout else { return };
+        // Some windows can't take the size we ask for (a minimum size, a
+        // fixed aspect), and each attempt fires another event. Don't keep
+        // asking.
+        let (m, g) = spacing(&self.cfg, mon.scale);
+        let target = layout.bounds(mon.work, m, g);
+        if let Some((last, at)) = self.placed.get(&hwnd) {
+            if *last == target && at.elapsed() < Duration::from_millis(1500) {
+                return;
+            }
+        }
+        self.put(hwnd, layout);
+        self.placed.insert(hwnd, (target, Instant::now()));
+        if self.placed.len() > 128 {
+            self.placed.retain(|_, (_, at)| at.elapsed() < Duration::from_secs(5));
         }
     }
 
@@ -669,24 +737,13 @@ impl State {
         if frame.visible.near(&target, 0) {
             return;
         }
-        // Some windows can't take the size we ask for (a minimum size, a
-        // fixed aspect). Don't keep asking.
-        if let Some((last, at)) = self.placed.get(&hwnd) {
-            if *last == target && at.elapsed() < Duration::from_millis(1500) {
-                return;
-            }
-        }
-        win::place(hwnd, target, frame);
+        win::place(hwnd, target, frame, true);
         // The invisible border can change size along with the window, which
         // leaves the first move a pixel out. Measure again and correct once.
         if let Some(after) = win::frame(hwnd) {
             if !after.visible.near(&target, 0) {
-                win::place(hwnd, target, after);
+                win::place(hwnd, target, after, true);
             }
-        }
-        self.placed.insert(hwnd, (target, Instant::now()));
-        if self.placed.len() > 128 {
-            self.placed.retain(|_, (_, at)| at.elapsed() < Duration::from_secs(5));
         }
     }
 }
