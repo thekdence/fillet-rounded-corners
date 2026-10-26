@@ -9,6 +9,7 @@ import {
   MAX_RADIUS,
   MAX_SPACING,
   getState,
+  previewSpacing,
   quit,
   runAction,
   setConfig,
@@ -29,11 +30,13 @@ const TABS: { value: Tab; label: string }[] = [
   { value: "shortcuts", label: "Shortcuts" },
 ];
 
-/** Changes reach the engine at most once a frame, so windows follow a slider
- * as it's dragged. The engine paces each app to what it can keep up with. */
+/** While a gap slider is dragged, its value reaches the engine at most once a
+ * frame so windows follow it. The engine paces each app to what it can keep
+ * up with. */
 const LIVE_MS = 16;
-/** Sliders fire on every pixel; only save to disk once they settle. */
-const SAVE_DELAY_MS = 300;
+/** Sliders fire on every pixel; apply and save the full config once they
+ * settle. */
+const SAVE_DELAY_MS = 150;
 
 export default function App() {
   const [config, setLocal] = useState<Config | null>(null);
@@ -85,33 +88,36 @@ export default function App() {
     return () => clearTimeout(id);
   }, [toast]);
 
-  const send = useCallback((persist: boolean) => {
+  const save = useCallback(() => {
     if (!latest.current) return;
-    setConfig(latest.current, persist).then(
+    setConfig(latest.current).then(
       () => setError(null),
       (e) => setError(String(e)),
     );
   }, []);
 
-  const sendLive = useCallback(() => {
+  // Just the two numbers, not the whole config: this runs every frame.
+  const sendSpacing = useCallback(() => {
     liveTimer.current = undefined;
     lastLive.current = performance.now();
-    send(false);
-  }, [send]);
+    if (latest.current) previewSpacing(latest.current.margin, latest.current.gap);
+  }, []);
 
   const update = useCallback(
     (patch: Partial<Config>) => {
       if (!latest.current) return;
       show({ ...latest.current, ...patch });
-      // Apply now (throttled) so the desktop moves with the slider...
-      const wait = LIVE_MS - (performance.now() - lastLive.current);
-      if (wait <= 0) sendLive();
-      else if (liveTimer.current === undefined) liveTimer.current = window.setTimeout(sendLive, wait);
-      // ...and save once things settle.
+      // Gap changes move the desktop with the slider as it's dragged...
+      if ("margin" in patch || "gap" in patch) {
+        const wait = LIVE_MS - (performance.now() - lastLive.current);
+        if (wait <= 0) sendSpacing();
+        else if (liveTimer.current === undefined) liveTimer.current = window.setTimeout(sendSpacing, wait);
+      }
+      // ...and everything is applied and saved once things settle.
       clearTimeout(saveTimer.current);
-      saveTimer.current = window.setTimeout(() => send(true), SAVE_DELAY_MS);
+      saveTimer.current = window.setTimeout(save, SAVE_DELAY_MS);
     },
-    [show, send, sendLive],
+    [show, save, sendSpacing],
   );
 
   const setHotkeys = useCallback((hotkeys: Hotkeys) => update({ hotkeys }), [update]);

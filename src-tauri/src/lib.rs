@@ -33,13 +33,9 @@ impl App {
         self.config.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Apply a config right away. While a slider is being dragged the UI
-    /// sends many of these with `persist` off, then one to save.
-    fn update(&self, next: Config, persist: bool) -> Result<Config, String> {
+    fn update(&self, next: Config) -> Result<Config, String> {
         let next = next.normalized();
-        if persist {
-            self.save(&next)?;
-        }
+        self.save(&next)?;
         *self.config.lock().unwrap_or_else(|e| e.into_inner()) = next.clone();
         self.engine.reload();
         let _ = self.pause_item.set_text(pause_label(next.enabled));
@@ -79,8 +75,20 @@ fn get_state(app: AppHandle, state: tauri::State<'_, App>) -> Snapshot {
 }
 
 #[tauri::command]
-fn set_config(state: tauri::State<'_, App>, config: Config, persist: bool) -> Result<Config, String> {
-    state.update(config, persist)
+fn set_config(state: tauri::State<'_, App>, config: Config) -> Result<Config, String> {
+    state.update(config)
+}
+
+/// Called every frame while a gap slider is dragged, so it only touches the
+/// two numbers and never the disk. `set_config` saves once the slider rests.
+#[tauri::command]
+fn preview_spacing(state: tauri::State<'_, App>, margin: u32, gap: u32) {
+    {
+        let mut config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+        config.margin = margin.min(config::MAX_SPACING);
+        config.gap = gap.min(config::MAX_SPACING);
+    }
+    state.engine.reload();
 }
 
 #[tauri::command]
@@ -151,7 +159,7 @@ fn toggle_pause(app: &AppHandle) {
     let state = app.state::<App>();
     let mut next = state.config();
     next.enabled = !next.enabled;
-    if let Ok(next) = state.update(next, true) {
+    if let Ok(next) = state.update(next) {
         // The settings window, if open, didn't make this change itself.
         let _ = app.emit_to(SETTINGS, "config", &next);
     }
@@ -229,6 +237,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_config,
+            preview_spacing,
             set_start_with_windows,
             running_apps,
             run_action,
