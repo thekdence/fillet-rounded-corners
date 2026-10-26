@@ -179,16 +179,10 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let config_path = app.path().app_config_dir()?.join("config.json");
-            let first_run = !config_path.exists();
+            // "Start with Windows" is only ever turned on from the settings.
+            // An unsigned app adding itself to the Run key on first launch,
+            // alongside a keyboard hook, gets flagged by Microsoft Defender.
             let config = Config::load(&config_path);
-            if first_run {
-                let _ = config.save(&config_path);
-                // Fillet is meant to always be running, so installed builds
-                // start with Windows unless you turn it off.
-                if !cfg!(debug_assertions) {
-                    let _ = autostart::set(true);
-                }
-            }
 
             let enabled = config.enabled;
             let config = Arc::new(Mutex::new(config));

@@ -12,8 +12,9 @@ something changed.
 
 Grab the Windows installer from the
 [latest release](https://github.com/thekdence/fillet-rounded-corners/releases/latest)
-and run it. Fillet opens its settings, then lives in the tray and starts with
-Windows (you can turn that off under Behavior). Requires Windows 11.
+and run it. Fillet opens its settings, then lives in the tray. To keep it
+running all the time, turn on **Start with Windows** under Behavior.
+Requires Windows 11.
 
 ## Features
 
