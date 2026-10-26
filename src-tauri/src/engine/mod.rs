@@ -69,6 +69,9 @@ const WINEVENT_SKIPOWNPROCESS: u32 = 0x0002;
 /// How close, in logical pixels, a window must be to a snap zone for
 /// automatic tidying to treat it as snapped.
 const SNAP_TOLERANCE: f64 = 12.0;
+/// A window maximised this soon after a drag ends was dropped on the top
+/// edge of the screen.
+const DRAG_TO_TOP: Duration = Duration::from_millis(1500);
 
 /// Called on the engine thread with the actions whose shortcut another app
 /// (or Windows) had already registered, and which Fillet now takes over.
@@ -133,6 +136,9 @@ thread_local! {
     static PENDING: RefCell<HashMap<isize, bool>> = RefCell::new(HashMap::new());
     /// Windows the user is dragging or resizing right now.
     static MOVING: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
+    /// When each window last finished being dragged, to tell Windows'
+    /// drag-to-top maximize apart from the maximize button.
+    static DRAGGED: RefCell<HashMap<isize, Instant>> = RefCell::new(HashMap::new());
     /// When the oldest pending event arrived.
     static PENDING_SINCE: Cell<Option<Instant>> = const { Cell::new(None) };
     static ENGINE_HWND: Cell<isize> = const { Cell::new(0) };
@@ -304,6 +310,7 @@ unsafe extern "system" fn on_event(
         }
         EVENT_SYSTEM_MOVESIZEEND => {
             MOVING.with(|m| m.borrow_mut().remove(&id));
+            DRAGGED.with(|d| d.borrow_mut().insert(id, Instant::now()));
             true
         }
         EVENT_OBJECT_LOCATIONCHANGE => {
@@ -615,6 +622,7 @@ impl State {
         PENDING_SINCE.set(None);
         // A window closed mid-drag never reports the drag ending.
         MOVING.with(|m| m.borrow_mut().retain(|&h| win::exists(h)));
+        DRAGGED.with(|d| d.borrow_mut().retain(|_, at| at.elapsed() < DRAG_TO_TOP));
         for (hwnd, may_tidy) in pending {
             if !win::exists(hwnd) {
                 self.forget(hwnd);
@@ -646,7 +654,10 @@ impl State {
         }
         let (Some(frame), Some(mon)) = (win::frame(hwnd), win::monitor(hwnd)) else { return };
         let layout = if win::is_maximized(hwnd) {
-            pad_max.then_some(Layout::Full)
+            // Dragging a window to the top of the screen is a snap like any
+            // other, so tidying covers it even when maximize is left alone.
+            let dragged = DRAGGED.with(|d| d.borrow_mut().remove(&hwnd)).is_some_and(|at| at.elapsed() < DRAG_TO_TOP);
+            (pad_max || (auto && dragged)).then_some(Layout::Full)
         } else if auto {
             let (m, g) = spacing(&self.cfg, mon.scale);
             let tol = (SNAP_TOLERANCE * mon.scale).round() as i32;

@@ -39,7 +39,11 @@ pub const COLOR_DEFAULT: u32 = 0xFFFF_FFFF;
 
 const WS_CHILD: u32 = 0x4000_0000;
 const WS_THICKFRAME: u32 = 0x0004_0000;
+const WS_EX_TRANSPARENT: u32 = 0x0000_0020;
 const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+
+/// Smallest window, in logical pixels, that gets rounded corners.
+const MIN_ROUNDED_SIZE: f64 = 48.0;
 const WS_EX_APPWINDOW: u32 = 0x0004_0000;
 
 /// Shell and system surfaces that must never be restyled or moved.
@@ -177,9 +181,19 @@ pub fn wants_corners(hwnd: isize) -> bool {
     if !is_plain_visible(hwnd) || is_maximized(hwnd) {
         return false;
     }
+    // Click-through overlays aren't windows you see, and rounding one makes
+    // DWM draw a frame around nothing. Apps (Fillet included, via Tauri)
+    // park tiny transparent helpers like this at the top-left of the screen.
+    if ex_style(hwnd) & WS_EX_TRANSPARENT != 0 || process_id(hwnd) == std::process::id() {
+        return false;
+    }
     match (window_rect(hwnd), monitor(hwnd)) {
-        // A window covering its whole monitor is a game or video player.
-        (Some(win), Some(mon)) => !mon.monitor.is_within(&win),
+        (Some(win), Some(mon)) => {
+            // Too small to be a real window: rounding would turn it into a dot.
+            let min = (MIN_ROUNDED_SIZE * mon.scale).round() as i32;
+            // A window covering its whole monitor is a game or video player.
+            win.w >= min && win.h >= min && !mon.monitor.is_within(&win)
+        }
         _ => false,
     }
 }

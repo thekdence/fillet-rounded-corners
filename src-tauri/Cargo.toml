@@ -1,6 +1,6 @@
 [package]
 name = "fillet"
-version = "0.1.1"
+version = "0.1.2"
 description = "Rounded corners and tidy window gaps for Windows 11"
 authors = ["thekdence"]
 edition = "2021"

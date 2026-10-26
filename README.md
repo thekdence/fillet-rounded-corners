@@ -41,6 +41,7 @@ Requires Windows 11.
 
 - **Automatic tidying** (optional). Snap a window with Windows' own snapping
   (drag to an edge, Win+Arrow, snap layouts) and Fillet adds the gaps.
+  Dragging a window to the top of the screen gives a full screen with gaps.
 - **Keep maximized windows round** (optional). Maximize becomes full screen
   with gaps, so the corners stay round.
 - **Leave apps alone.** Fillet never touches apps on this list.
