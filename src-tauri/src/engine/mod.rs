@@ -5,6 +5,7 @@
 //! finishes moving; we batch those for a moment and handle each window once.
 //! Between events the thread sleeps in `GetMessageW` and costs nothing.
 
+mod dim;
 mod keys;
 mod win;
 
@@ -33,7 +34,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    config::{Action, Border, Config, CornerStyle},
+    config::{self, Action, Border, Config, CornerStyle, Highlight},
     layout::{Layout, Rect},
 };
 
@@ -163,6 +164,10 @@ struct State {
     clipped: HashMap<isize, (i32, i32)>,
     /// The window wearing the active-window border, if any.
     highlighted: isize,
+    /// Shades the windows behind the active one, while that's turned on.
+    dimmer: Option<dim::Dimmer>,
+    /// The window the shade sits beneath.
+    dimmed_below: isize,
     /// Where automatic tidying last put each window and when, so a window
     /// that refuses a size can't send us into a loop.
     placed: HashMap<isize, (Rect, Instant)>,
@@ -218,6 +223,8 @@ fn run(shared: Arc<Mutex<Config>>, on_conflicts: ConflictFn, ready: mpsc::Sender
             styled: HashSet::new(),
             clipped: HashMap::new(),
             highlighted: 0,
+            dimmer: None,
+            dimmed_below: 0,
             placed: HashMap::new(),
             live: HashMap::new(),
             names: HashMap::new(),
@@ -330,7 +337,7 @@ unsafe extern "system" fn on_event(
             // Move the highlight now rather than after the flush delay, so
             // it keeps up with clicking around.
             ACTIVE.set(unsafe { GetAncestor(hwnd, GA_ROOT) } as isize);
-            with_state(State::sync_highlight);
+            with_state(State::sync_focus);
             false
         }
         EVENT_OBJECT_SHOW | EVENT_SYSTEM_MINIMIZEEND => true,
@@ -347,8 +354,11 @@ unsafe extern "system" fn on_event(
 
 fn hook(event: u32) -> Option<HWINEVENTHOOK> {
     // Focus moving to Fillet's own settings window still matters: the
-    // highlight should leave the window that had it.
-    let skip_own = if event == EVENT_SYSTEM_FOREGROUND { 0 } else { WINEVENT_SKIPOWNPROCESS };
+    // highlight leaves the window that had it, and the shade moves beneath
+    // the settings. The settings window takes focus before it's shown, so
+    // its showing up counts too.
+    let own = matches!(event, EVENT_SYSTEM_FOREGROUND | EVENT_OBJECT_SHOW);
+    let skip_own = if own { 0 } else { WINEVENT_SKIPOWNPROCESS };
     let hook = unsafe {
         SetWinEventHook(event, event, ptr::null_mut(), Some(on_event), 0, 0, WINEVENT_OUTOFCONTEXT | skip_own)
     };
@@ -388,6 +398,8 @@ impl State {
         }
         self.unregister_hotkeys();
         self.unstyle_all();
+        self.dimmer = None;
+        self.dimmed_below = 0;
         self.live.clear();
         PENDING.with(|p| p.borrow_mut().clear());
         PENDING_SINCE.set(None);
@@ -417,13 +429,23 @@ impl State {
             || prev.corner_style != next.corner_style
             || prev.border != next.border
             || prev.border_color != next.border_color
-            || prev.highlight_active != next.highlight_active
+            || prev.highlight != next.highlight
+            || prev.highlight_color != next.highlight_color
             || prev.clip_radius != next.clip_radius
             || prev.clip_apps != next.clip_apps
             || prev.ignored_apps != next.ignored_apps;
         if restyle {
             self.unstyle_all();
             self.style_all();
+        }
+
+        if prev.dim_amount != next.dim_amount {
+            if let Some(dimmer) = &self.dimmer {
+                dimmer.set_amount(next.dim_amount);
+            }
+        }
+        if prev.dim_inactive != next.dim_inactive {
+            self.sync_focus();
         }
 
         if prev.margin != next.margin || prev.gap != next.gap {
@@ -560,7 +582,7 @@ impl State {
         for hwnd in win::top_level_windows() {
             self.style(hwnd);
         }
-        self.sync_highlight();
+        self.sync_focus();
     }
 
     /// Apply the corner and border settings to one window.
@@ -604,11 +626,11 @@ impl State {
 
     fn paint_border(&mut self, hwnd: isize) {
         let border = if hwnd == self.highlighted {
-            Some(highlight_color())
+            Some(self.highlight_color())
         } else {
             match self.cfg.border {
                 // Only needed to take a highlight back off.
-                Border::System => self.cfg.highlight_active.then_some(win::COLOR_DEFAULT),
+                Border::System => (self.cfg.highlight != Highlight::Off).then_some(win::COLOR_DEFAULT),
                 Border::None => Some(win::COLOR_NONE),
                 Border::Custom => Some(self.cfg.border_colorref()),
             }
@@ -620,11 +642,20 @@ impl State {
         }
     }
 
-    /// Move the active-window border to whichever window has focus now.
-    fn sync_highlight(&mut self) {
+    fn highlight_color(&self) -> u32 {
+        match self.cfg.highlight {
+            Highlight::Custom => self.cfg.highlight_colorref(),
+            _ => config::colorref(win::accent_color().unwrap_or((0x5b, 0x6c, 0xf0))),
+        }
+    }
+
+    /// Follow the focus: move the active-window border, and the shade, to
+    /// whichever window has it now.
+    fn sync_focus(&mut self) {
+        self.sync_dim();
         let active = ACTIVE.get();
         let want = if self.cfg.enabled
-            && self.cfg.highlight_active
+            && self.cfg.highlight != Highlight::Off
             && active != 0
             && win::wants_corners(active)
             && !self.is_ignored(active)
@@ -642,6 +673,26 @@ impl State {
         }
         if want != 0 {
             self.paint_border(want);
+        }
+    }
+
+    fn sync_dim(&mut self) {
+        let anchor = if self.cfg.enabled && self.cfg.dim_inactive { win::dim_anchor(ACTIVE.get()) } else { None };
+        let Some(anchor) = anchor else {
+            if let Some(dimmer) = &self.dimmer {
+                dimmer.hide();
+            }
+            self.dimmed_below = 0;
+            return;
+        };
+        if self.dimmer.is_none() {
+            self.dimmer = dim::Dimmer::new(self.cfg.dim_amount);
+        }
+        if let Some(dimmer) = &self.dimmer {
+            if anchor != self.dimmed_below {
+                dimmer.show_below(anchor);
+                self.dimmed_below = anchor;
+            }
         }
     }
 
@@ -679,7 +730,7 @@ impl State {
             self.style(hwnd);
         }
         // A window that was just maximised or closed gives the highlight up.
-        self.sync_highlight();
+        self.sync_focus();
         if self.styled.len() > 256 {
             self.styled.retain(|&h| win::exists(h));
         }
@@ -690,6 +741,9 @@ impl State {
         self.clipped.remove(&hwnd);
         if self.highlighted == hwnd {
             self.highlighted = 0;
+        }
+        if self.dimmed_below == hwnd {
+            self.dimmed_below = 0;
         }
         self.placed.remove(&hwnd);
         self.live.remove(&hwnd);
@@ -828,16 +882,6 @@ pub fn running_apps() -> Vec<RunningApp> {
         .collect();
     apps.sort_by(|a, b| a.exe.cmp(&b.exe));
     apps
-}
-
-/// The active-window border: the accent colour, toned down toward grey so it
-/// marks the window without shouting.
-fn highlight_color() -> u32 {
-    const GREY: f64 = 128.0;
-    const MIX: f64 = 0.4;
-    let (r, g, b) = win::accent_color().unwrap_or((0x5b, 0x6c, 0xf0));
-    let soft = |c: u8| (c as f64 + (GREY - c as f64) * MIX).round() as u32;
-    soft(r) | (soft(g) << 8) | (soft(b) << 16)
 }
 
 /// Margin and gap in physical pixels for a monitor's scale.

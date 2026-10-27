@@ -91,6 +91,13 @@ fn preview_spacing(state: tauri::State<'_, App>, margin: u32, gap: u32) {
     state.engine.reload();
 }
 
+/// The dim slider, while it's dragged. Like `preview_spacing`.
+#[tauri::command]
+fn preview_dim(state: tauri::State<'_, App>, amount: u32) {
+    state.config.lock().unwrap_or_else(|e| e.into_inner()).dim_amount = amount.clamp(config::MIN_DIM, config::MAX_DIM);
+    state.engine.reload();
+}
+
 #[tauri::command]
 fn set_start_with_windows(enabled: bool) -> Result<bool, String> {
     autostart::set(enabled)?;
@@ -238,6 +245,7 @@ pub fn run() {
             get_state,
             set_config,
             preview_spacing,
+            preview_dim,
             set_start_with_windows,
             running_apps,
             run_action,

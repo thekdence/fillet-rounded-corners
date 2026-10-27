@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type CornerStyle = "round" | "small";
 export type Border = "system" | "none" | "custom";
+export type Highlight = "off" | "accent" | "custom";
 
 /** `mods` uses RegisterHotKey flags (Alt 1, Ctrl 2, Shift 4, Win 8); `vk` is a virtual-key code. */
 export interface Shortcut {
@@ -29,7 +30,10 @@ export interface Config {
   cornerStyle: CornerStyle;
   border: Border;
   borderColor: string;
-  highlightActive: boolean;
+  highlight: Highlight;
+  highlightColor: string;
+  dimInactive: boolean;
+  dimAmount: number;
   margin: number;
   gap: number;
   autoTidy: boolean;
@@ -54,6 +58,8 @@ export interface RunningApp {
 
 export const MAX_SPACING = 64;
 export const MAX_RADIUS = 32;
+export const MIN_DIM = 5;
+export const MAX_DIM = 80;
 
 export const DEFAULT_HOTKEYS: Hotkeys = {
   tidyWindow: { mods: 9, vk: 0x0d },
@@ -73,6 +79,8 @@ export const setConfig = (config: Config) => invoke<Config>("set_config", { conf
  * and forget: it runs every frame. */
 export const previewSpacing = (margin: number, gap: number) =>
   void invoke("preview_spacing", { margin, gap }).catch(() => {});
+/** Change the dim amount while its slider is dragged, without saving. */
+export const previewDim = (amount: number) => void invoke("preview_dim", { amount }).catch(() => {});
 export const setStartWithWindows = (enabled: boolean) => invoke<boolean>("set_start_with_windows", { enabled });
 export const runningApps = () => invoke<RunningApp[]>("running_apps");
 export const runAction = (action: Action) => invoke<void>("run_action", { action });

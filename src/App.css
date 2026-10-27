@@ -24,7 +24,6 @@
   --win-line: #e6e7ee;
   --win-side: #f0f1f7;
   --win-border: rgba(0, 0, 0, 0.14);
-  --win-active: color-mix(in srgb, var(--accent) 60%, #808080);
   --taskbar: rgba(255, 255, 255, 0.72);
 
   font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
@@ -799,8 +798,18 @@ kbd {
   background: var(--accent-soft);
 }
 
+.pdim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #000;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
 .ptaskbar {
   position: absolute;
+  z-index: 3;
   left: 0;
   right: 0;
   bottom: 0;

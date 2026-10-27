@@ -30,6 +30,9 @@ export function Preview({ config }: { config: Config }) {
         ? config.borderColor
         : "var(--win-border)";
 
+  const highlight =
+    config.highlight === "accent" ? "var(--accent)" : config.highlight === "custom" ? config.highlightColor : null;
+
   const pct = (v: number, of: number) => `${(v / of) * 100}%`;
 
   return (
@@ -45,7 +48,8 @@ export function Preview({ config }: { config: Config }) {
               width: pct(w.w, W),
               height: pct(w.h, SCREEN_H),
               borderRadius: `calc(${radius} * var(--u))`,
-              borderColor: config.highlightActive && w.kind === "editor" ? "var(--win-active)" : border,
+              borderColor: w.kind === "editor" && highlight ? highlight : border,
+              zIndex: w.kind === "editor" ? 2 : undefined,
             }}
           >
             <div className="pwin-bar">
@@ -70,6 +74,7 @@ export function Preview({ config }: { config: Config }) {
             </div>
           </div>
         ))}
+        <div className="pdim" style={{ opacity: config.enabled && config.dimInactive ? config.dimAmount / 100 : 0 }} />
         <div className="ptaskbar" style={{ height: pct(TASKBAR, SCREEN_H) }}>
           <i className="is-start" />
           <i />

@@ -201,7 +201,24 @@ pub fn wants_corners(hwnd: isize) -> bool {
 /// Should this window be arranged? Only real app windows: no tool windows,
 /// popups or owned dialogs, which would be disruptive to move.
 pub fn wants_layout(hwnd: isize) -> bool {
-    is_plain_visible(hwnd) && is_app_window(hwnd)
+    // Fillet's own settings window stays where the user put it.
+    is_plain_visible(hwnd) && is_app_window(hwnd) && process_id(hwnd) != std::process::id()
+}
+
+/// The window to keep bright while the rest are dimmed: the top of the
+/// foreground window's chain of visible owners, so a dialog's parent stays
+/// bright with it. None when the desktop or the shell has focus.
+pub fn dim_anchor(hwnd: isize) -> Option<isize> {
+    let mut top = hwnd;
+    loop {
+        let owner = unsafe { GetWindow(h(top), GW_OWNER) } as isize;
+        if owner == 0 || !is_plain_visible(owner) {
+            break;
+        }
+        top = owner;
+    }
+    let ok = is_plain_visible(top) && ex_style(top) & WS_EX_TOOLWINDOW == 0 && !title(top).is_empty();
+    ok.then_some(top)
 }
 
 /// A window that shows up in the taskbar as an app of its own.

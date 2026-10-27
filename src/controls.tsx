@@ -99,10 +99,12 @@ export function Slider({
   onChange,
   label,
   disabled,
+  unit = "px",
 }: {
   value: number;
   min: number;
   max: number;
+  unit?: string;
   onChange: (v: number) => void;
   label: string;
   disabled?: boolean;
@@ -120,7 +122,7 @@ export function Slider({
         style={{ "--fill": `${fill}%` } as React.CSSProperties}
         onChange={(e) => onChange(Number(e.target.value))}
       />
-      <output>{value}px</output>
+      <output>{value}{unit}</output>
     </div>
   );
 }

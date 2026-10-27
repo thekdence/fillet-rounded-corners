@@ -27,6 +27,16 @@ pub enum Border {
     Custom,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Highlight {
+    Off,
+    /// The Windows accent colour.
+    Accent,
+    /// `Config::highlight_color`.
+    Custom,
+}
+
 /// A global shortcut. `mods` uses the RegisterHotKey flags
 /// (Alt 1, Ctrl 2, Shift 4, Win 8) and `vk` is a Windows virtual-key code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,8 +133,14 @@ pub struct Config {
     pub border: Border,
     /// `#rrggbb`, used when `border` is `Custom`.
     pub border_color: String,
-    /// Give the focused window a soft border in the accent colour.
-    pub highlight_active: bool,
+    /// A border colour for the focused window only.
+    pub highlight: Highlight,
+    /// `#rrggbb`, used when `highlight` is `Custom`.
+    pub highlight_color: String,
+    /// Shade every window except the focused one.
+    pub dim_inactive: bool,
+    /// How dark the shade is, in percent.
+    pub dim_amount: u32,
     /// Space between windows and the screen edge, in logical pixels.
     pub margin: u32,
     /// Space between neighbouring windows, in logical pixels.
@@ -151,7 +167,10 @@ impl Default for Config {
             corner_style: CornerStyle::Round,
             border: Border::System,
             border_color: "#5b6cf0".into(),
-            highlight_active: false,
+            highlight: Highlight::Off,
+            highlight_color: "#5b6cf0".into(),
+            dim_inactive: false,
+            dim_amount: 25,
             margin: 15,
             gap: 10,
             auto_tidy: false,
@@ -166,6 +185,8 @@ impl Default for Config {
 
 pub const MAX_SPACING: u32 = 64;
 pub const MAX_RADIUS: u32 = 32;
+pub const MIN_DIM: u32 = 5;
+pub const MAX_DIM: u32 = 80;
 
 impl Config {
     /// Clamp values into range and tidy the app lists, so the engine can
@@ -174,8 +195,12 @@ impl Config {
         self.margin = self.margin.min(MAX_SPACING);
         self.gap = self.gap.min(MAX_SPACING);
         self.clip_radius = self.clip_radius.clamp(2, MAX_RADIUS);
+        self.dim_amount = self.dim_amount.clamp(MIN_DIM, MAX_DIM);
         if parse_hex_color(&self.border_color).is_none() {
             self.border_color = Config::default().border_color;
+        }
+        if parse_hex_color(&self.highlight_color).is_none() {
+            self.highlight_color = Config::default().highlight_color;
         }
         for list in [&mut self.ignored_apps, &mut self.clip_apps] {
             for app in list.iter_mut() {
@@ -209,9 +234,16 @@ impl Config {
 
     /// The border colour as a Win32 COLORREF (0x00BBGGRR).
     pub fn border_colorref(&self) -> u32 {
-        let (r, g, b) = parse_hex_color(&self.border_color).unwrap_or((0x5b, 0x6c, 0xf0));
-        u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16)
+        colorref(parse_hex_color(&self.border_color).unwrap_or((0x5b, 0x6c, 0xf0)))
     }
+
+    pub fn highlight_colorref(&self) -> u32 {
+        colorref(parse_hex_color(&self.highlight_color).unwrap_or((0x5b, 0x6c, 0xf0)))
+    }
+}
+
+pub fn colorref((r, g, b): (u8, u8, u8)) -> u32 {
+    u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16)
 }
 
 fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
@@ -241,6 +273,7 @@ mod tests {
         let cfg = Config {
             margin: 500,
             clip_radius: 0,
+            dim_amount: 100,
             border_color: "nope".into(),
             ignored_apps: vec![" Code.EXE ".into(), "code.exe".into(), "".into()],
             ..Config::default()
@@ -248,6 +281,7 @@ mod tests {
         .normalized();
         assert_eq!(cfg.margin, MAX_SPACING);
         assert_eq!(cfg.clip_radius, 2);
+        assert_eq!(cfg.dim_amount, MAX_DIM);
         assert_eq!(cfg.border_color, Config::default().border_color);
         assert_eq!(cfg.ignored_apps, vec!["code.exe".to_string()]);
     }

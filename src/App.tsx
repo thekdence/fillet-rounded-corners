@@ -7,8 +7,11 @@ import {
   DEFAULT_HOTKEYS,
   type Hotkeys,
   MAX_RADIUS,
+  MAX_DIM,
   MAX_SPACING,
+  MIN_DIM,
   getState,
+  previewDim,
   previewSpacing,
   quit,
   runAction,
@@ -113,6 +116,7 @@ export default function App() {
         if (wait <= 0) sendSpacing();
         else if (liveTimer.current === undefined) liveTimer.current = window.setTimeout(sendSpacing, wait);
       }
+      if (patch.dimAmount !== undefined) previewDim(patch.dimAmount);
       // ...and everything is applied and saved once things settle.
       clearTimeout(saveTimer.current);
       saveTimer.current = window.setTimeout(save, SAVE_DELAY_MS);
@@ -203,14 +207,6 @@ export default function App() {
                   disabled={!on}
                 />
               </Row>
-              <Row label="Highlight the active window" hint="A soft accent border on the window you're using" disabled={!on}>
-                <Toggle
-                  checked={config.highlightActive}
-                  onChange={(highlightActive) => update({ highlightActive })}
-                  label="Highlight the active window"
-                  disabled={!on}
-                />
-              </Row>
             </Section>
 
             <Section
@@ -239,6 +235,52 @@ export default function App() {
                   onChange={(gap) => update({ gap })}
                   label="Gap between windows"
                   disabled={!on}
+                />
+              </Row>
+            </Section>
+
+            <Section title="Active window">
+              <Row label="Highlight" hint="A border color for the window you're using" disabled={!on}>
+                {config.highlight === "custom" && (
+                  <label className="swatch" style={{ background: config.highlightColor }}>
+                    <input
+                      type="color"
+                      value={config.highlightColor}
+                      aria-label="Highlight color"
+                      disabled={!on}
+                      onChange={(e) => update({ highlightColor: e.target.value })}
+                    />
+                  </label>
+                )}
+                <Segmented
+                  value={config.highlight}
+                  options={[
+                    { value: "off", label: "Off" },
+                    { value: "accent", label: "Accent" },
+                    { value: "custom", label: "Color" },
+                  ]}
+                  onChange={(highlight) => update({ highlight })}
+                  label="Active window highlight"
+                  disabled={!on}
+                />
+              </Row>
+              <Row label="Dim other windows" hint="Shade everything behind the window you're using" disabled={!on}>
+                <Toggle
+                  checked={config.dimInactive}
+                  onChange={(dimInactive) => update({ dimInactive })}
+                  label="Dim other windows"
+                  disabled={!on}
+                />
+              </Row>
+              <Row label="Dim amount" disabled={!on || !config.dimInactive}>
+                <Slider
+                  value={config.dimAmount}
+                  min={MIN_DIM}
+                  max={MAX_DIM}
+                  unit="%"
+                  onChange={(dimAmount) => update({ dimAmount })}
+                  label="Dim amount"
+                  disabled={!on || !config.dimInactive}
                 />
               </Row>
             </Section>
