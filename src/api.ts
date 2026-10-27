@@ -29,6 +29,7 @@ export interface Config {
   cornerStyle: CornerStyle;
   border: Border;
   borderColor: string;
+  highlightActive: boolean;
   margin: number;
   gap: number;
   autoTidy: boolean;

@@ -141,6 +141,8 @@ thread_local! {
     static DRAGGED: RefCell<HashMap<isize, Instant>> = RefCell::new(HashMap::new());
     /// When the oldest pending event arrived.
     static PENDING_SINCE: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// The foreground window, as last reported by Windows.
+    static ACTIVE: Cell<isize> = const { Cell::new(0) };
     static ENGINE_HWND: Cell<isize> = const { Cell::new(0) };
 }
 
@@ -159,6 +161,8 @@ struct State {
     styled: HashSet<isize>,
     /// Windows we clipped to a rounded region, and the size we clipped at.
     clipped: HashMap<isize, (i32, i32)>,
+    /// The window wearing the active-window border, if any.
+    highlighted: isize,
     /// Where automatic tidying last put each window and when, so a window
     /// that refuses a size can't send us into a loop.
     placed: HashMap<isize, (Rect, Instant)>,
@@ -213,6 +217,7 @@ fn run(shared: Arc<Mutex<Config>>, on_conflicts: ConflictFn, ready: mpsc::Sender
             hotkeys_suspended: false,
             styled: HashSet::new(),
             clipped: HashMap::new(),
+            highlighted: 0,
             placed: HashMap::new(),
             live: HashMap::new(),
             names: HashMap::new(),
@@ -321,6 +326,13 @@ unsafe extern "system" fn on_event(
             }
             true
         }
+        EVENT_SYSTEM_FOREGROUND => {
+            // Move the highlight now rather than after the flush delay, so
+            // it keeps up with clicking around.
+            ACTIVE.set(unsafe { GetAncestor(hwnd, GA_ROOT) } as isize);
+            with_state(State::sync_highlight);
+            false
+        }
         EVENT_OBJECT_SHOW | EVENT_SYSTEM_MINIMIZEEND => true,
         _ => false,
     };
@@ -334,16 +346,11 @@ unsafe extern "system" fn on_event(
 }
 
 fn hook(event: u32) -> Option<HWINEVENTHOOK> {
+    // Focus moving to Fillet's own settings window still matters: the
+    // highlight should leave the window that had it.
+    let skip_own = if event == EVENT_SYSTEM_FOREGROUND { 0 } else { WINEVENT_SKIPOWNPROCESS };
     let hook = unsafe {
-        SetWinEventHook(
-            event,
-            event,
-            ptr::null_mut(),
-            Some(on_event),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-        )
+        SetWinEventHook(event, event, ptr::null_mut(), Some(on_event), 0, 0, WINEVENT_OUTOFCONTEXT | skip_own)
     };
     (!hook.is_null()).then_some(hook)
 }
@@ -370,6 +377,7 @@ impl State {
         }
         self.update_location_hook();
         self.register_hotkeys();
+        ACTIVE.set(win::foreground());
         self.style_all();
     }
 
@@ -409,6 +417,7 @@ impl State {
             || prev.corner_style != next.corner_style
             || prev.border != next.border
             || prev.border_color != next.border_color
+            || prev.highlight_active != next.highlight_active
             || prev.clip_radius != next.clip_radius
             || prev.clip_apps != next.clip_apps
             || prev.ignored_apps != next.ignored_apps;
@@ -551,6 +560,7 @@ impl State {
         for hwnd in win::top_level_windows() {
             self.style(hwnd);
         }
+        self.sync_highlight();
     }
 
     /// Apply the corner and border settings to one window.
@@ -589,10 +599,19 @@ impl State {
             }
         }
 
-        let border = match self.cfg.border {
-            Border::System => None,
-            Border::None => Some(win::COLOR_NONE),
-            Border::Custom => Some(self.cfg.border_colorref()),
+        self.paint_border(hwnd);
+    }
+
+    fn paint_border(&mut self, hwnd: isize) {
+        let border = if hwnd == self.highlighted {
+            Some(highlight_color())
+        } else {
+            match self.cfg.border {
+                // Only needed to take a highlight back off.
+                Border::System => self.cfg.highlight_active.then_some(win::COLOR_DEFAULT),
+                Border::None => Some(win::COLOR_NONE),
+                Border::Custom => Some(self.cfg.border_colorref()),
+            }
         };
         if let Some(color) = border {
             if win::set_border(hwnd, color) {
@@ -601,7 +620,33 @@ impl State {
         }
     }
 
+    /// Move the active-window border to whichever window has focus now.
+    fn sync_highlight(&mut self) {
+        let active = ACTIVE.get();
+        let want = if self.cfg.enabled
+            && self.cfg.highlight_active
+            && active != 0
+            && win::wants_corners(active)
+            && !self.is_ignored(active)
+        {
+            active
+        } else {
+            0
+        };
+        let prev = mem::replace(&mut self.highlighted, want);
+        if prev == want {
+            return;
+        }
+        if prev != 0 && self.styled.contains(&prev) && win::exists(prev) {
+            self.paint_border(prev);
+        }
+        if want != 0 {
+            self.paint_border(want);
+        }
+    }
+
     fn unstyle_all(&mut self) {
+        self.highlighted = 0;
         for hwnd in self.styled.drain() {
             if win::exists(hwnd) {
                 win::set_corners(hwnd, win::CORNER_DEFAULT);
@@ -633,6 +678,8 @@ impl State {
             }
             self.style(hwnd);
         }
+        // A window that was just maximised or closed gives the highlight up.
+        self.sync_highlight();
         if self.styled.len() > 256 {
             self.styled.retain(|&h| win::exists(h));
         }
@@ -641,6 +688,9 @@ impl State {
     fn forget(&mut self, hwnd: isize) {
         self.styled.remove(&hwnd);
         self.clipped.remove(&hwnd);
+        if self.highlighted == hwnd {
+            self.highlighted = 0;
+        }
         self.placed.remove(&hwnd);
         self.live.remove(&hwnd);
     }
@@ -778,6 +828,16 @@ pub fn running_apps() -> Vec<RunningApp> {
         .collect();
     apps.sort_by(|a, b| a.exe.cmp(&b.exe));
     apps
+}
+
+/// The active-window border: the accent colour, toned down toward grey so it
+/// marks the window without shouting.
+fn highlight_color() -> u32 {
+    const GREY: f64 = 128.0;
+    const MIX: f64 = 0.4;
+    let (r, g, b) = win::accent_color().unwrap_or((0x5b, 0x6c, 0xf0));
+    let soft = |c: u8| (c as f64 + (GREY - c as f64) * MIX).round() as u32;
+    soft(r) | (soft(g) << 8) | (soft(b) << 16)
 }
 
 /// Margin and gap in physical pixels for a monitor's scale.

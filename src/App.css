@@ -24,6 +24,7 @@
   --win-line: #e6e7ee;
   --win-side: #f0f1f7;
   --win-border: rgba(0, 0, 0, 0.14);
+  --win-active: color-mix(in srgb, var(--accent) 60%, #808080);
   --taskbar: rgba(255, 255, 255, 0.72);
 
   font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;

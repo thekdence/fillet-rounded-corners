@@ -12,6 +12,7 @@ let config: Config = {
   cornerStyle: "round",
   border: "system",
   borderColor: "#5b6cf0",
+  highlightActive: false,
   margin: 15,
   gap: 10,
   autoTidy: false,

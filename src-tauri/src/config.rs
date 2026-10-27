@@ -123,6 +123,8 @@ pub struct Config {
     pub border: Border,
     /// `#rrggbb`, used when `border` is `Custom`.
     pub border_color: String,
+    /// Give the focused window a soft border in the accent colour.
+    pub highlight_active: bool,
     /// Space between windows and the screen edge, in logical pixels.
     pub margin: u32,
     /// Space between neighbouring windows, in logical pixels.
@@ -149,6 +151,7 @@ impl Default for Config {
             corner_style: CornerStyle::Round,
             border: Border::System,
             border_color: "#5b6cf0".into(),
+            highlight_active: false,
             margin: 15,
             gap: 10,
             auto_tidy: false,

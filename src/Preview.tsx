@@ -45,7 +45,7 @@ export function Preview({ config }: { config: Config }) {
               width: pct(w.w, W),
               height: pct(w.h, SCREEN_H),
               borderRadius: `calc(${radius} * var(--u))`,
-              borderColor: border,
+              borderColor: config.highlightActive && w.kind === "editor" ? "var(--win-active)" : border,
             }}
           >
             <div className="pwin-bar">

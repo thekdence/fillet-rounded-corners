@@ -8,7 +8,7 @@ use std::{ffi::c_void, mem, ptr};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HWND, LPARAM, RECT},
     Graphics::{
-        Dwm::{DwmGetWindowAttribute, DwmSetWindowAttribute},
+        Dwm::{DwmGetColorizationColor, DwmGetWindowAttribute, DwmSetWindowAttribute},
         Gdi::{CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromWindow, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTONEAREST},
     },
     System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
@@ -319,6 +319,13 @@ pub fn set_corners(hwnd: isize, preference: u32) -> bool {
 
 pub fn set_border(hwnd: isize, color: u32) -> bool {
     set_dword(hwnd, DWMWA_BORDER_COLOR, color)
+}
+
+/// The Windows accent colour as (r, g, b).
+pub fn accent_color() -> Option<(u8, u8, u8)> {
+    let (mut argb, mut opaque) = (0u32, 0);
+    let ok = unsafe { DwmGetColorizationColor(&mut argb, &mut opaque) } == 0;
+    ok.then(|| ((argb >> 16) as u8, (argb >> 8) as u8, argb as u8))
 }
 
 /// Round a window by clipping it to a rounded region, for apps that ignore

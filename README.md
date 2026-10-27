@@ -25,6 +25,8 @@ Requires Windows 11.
   Fillet clips those to a rounded shape instead, with a radius you choose.
   Chrome is on the list by default.
 - **Window borders.** Keep the system border, hide it, or pick a color.
+- **Active window highlight** (optional). The window you're using gets a
+  soft border in a toned-down version of your Windows accent color.
 - **Gaps.** Set the space around each screen's edge and between windows.
   Windows already in a layout move to the new spacing as you drag the slider.
 - **Shortcuts** (all can be changed):

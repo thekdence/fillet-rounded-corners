@@ -203,6 +203,14 @@ export default function App() {
                   disabled={!on}
                 />
               </Row>
+              <Row label="Highlight the active window" hint="A soft accent border on the window you're using" disabled={!on}>
+                <Toggle
+                  checked={config.highlightActive}
+                  onChange={(highlightActive) => update({ highlightActive })}
+                  label="Highlight the active window"
+                  disabled={!on}
+                />
+              </Row>
             </Section>
 
             <Section
