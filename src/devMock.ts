@@ -16,6 +16,7 @@ let config: Config = {
   highlightColor: "#5b6cf0",
   dimInactive: false,
   dimAmount: 25,
+  dimEachScreen: false,
   margin: 15,
   gap: 10,
   autoTidy: false,

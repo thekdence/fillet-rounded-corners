@@ -283,6 +283,18 @@ export default function App() {
                   disabled={!on || !config.dimInactive}
                 />
               </Row>
+              <Row
+                label="Every screen"
+                hint="Keep the front window on each screen bright, not just the one you're using"
+                disabled={!on || !config.dimInactive}
+              >
+                <Toggle
+                  checked={config.dimEachScreen}
+                  onChange={(dimEachScreen) => update({ dimEachScreen })}
+                  label="Keep the front window on every screen bright"
+                  disabled={!on || !config.dimInactive}
+                />
+              </Row>
             </Section>
           </>
         )}

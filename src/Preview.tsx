@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Config } from "./api";
 
 // A miniature desktop: one window on the left, two stacked on the right,
@@ -10,6 +11,8 @@ const TASKBAR = 22;
 type Kind = "editor" | "browser" | "chat";
 
 export function Preview({ config }: { config: Config }) {
+  // Click a window to focus it, to try the highlight and dimming.
+  const [focus, setFocus] = useState<Kind>("editor");
   const W = SCREEN_W;
   const H = SCREEN_H - TASKBAR;
   const { margin: m, gap: g } = config;
@@ -42,14 +45,15 @@ export function Preview({ config }: { config: Config }) {
           <div
             key={w.kind}
             className={`pwin pwin-${w.kind}`}
+            onPointerDown={() => setFocus(w.kind)}
             style={{
               left: pct(w.x, W),
               top: pct(w.y, SCREEN_H),
               width: pct(w.w, W),
               height: pct(w.h, SCREEN_H),
               borderRadius: `calc(${radius} * var(--u))`,
-              borderColor: w.kind === "editor" && highlight ? highlight : border,
-              zIndex: w.kind === "editor" ? 2 : undefined,
+              borderColor: w.kind === focus && highlight ? highlight : border,
+              zIndex: w.kind === focus ? 2 : undefined,
             }}
           >
             <div className="pwin-bar">

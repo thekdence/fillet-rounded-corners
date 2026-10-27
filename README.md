@@ -26,8 +26,10 @@ Requires Windows 11.
   Chrome is on the list by default.
 - **Window borders.** Keep the system border, hide it, or pick a color.
 - **Active window** (optional). Give the window you're using a border in
-  your accent color or any color, and dim everything behind it by as much
-  as you like.
+  your accent color or any color, and dim everything behind it, taskbar
+  included, by as much as you like. Focus changes fade rather than snap,
+  and with several screens you can keep the front window on each one
+  bright.
 - **Gaps.** Set the space around each screen's edge and between windows.
   Windows already in a layout move to the new spacing as you drag the slider.
 - **Shortcuts** (all can be changed):

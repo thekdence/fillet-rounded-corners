@@ -42,6 +42,8 @@ const WM_RELOAD: u32 = WM_APP + 1;
 const WM_ACTION: u32 = WM_APP + 2;
 const WM_SUSPEND_HOTKEYS: u32 = WM_APP + 3;
 const WM_SHUTDOWN: u32 = WM_APP + 4;
+/// From the dimmer's fade thread, once per display refresh.
+const WM_FADE_TICK: u32 = WM_APP + 5;
 
 const FLUSH_TIMER: usize = 1;
 const SETTLE_TIMER: usize = 2;
@@ -166,8 +168,8 @@ struct State {
     highlighted: isize,
     /// Shades the windows behind the active one, while that's turned on.
     dimmer: Option<dim::Dimmer>,
-    /// The window the shade sits beneath.
-    dimmed_below: isize,
+    /// What each screen's shade was last told to keep bright.
+    dim_key: Vec<(isize, Option<isize>)>,
     /// Where automatic tidying last put each window and when, so a window
     /// that refuses a size can't send us into a loop.
     placed: HashMap<isize, (Rect, Instant)>,
@@ -224,7 +226,7 @@ fn run(shared: Arc<Mutex<Config>>, on_conflicts: ConflictFn, ready: mpsc::Sender
             clipped: HashMap::new(),
             highlighted: 0,
             dimmer: None,
-            dimmed_below: 0,
+            dim_key: Vec::new(),
             placed: HashMap::new(),
             live: HashMap::new(),
             names: HashMap::new(),
@@ -266,6 +268,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
             })
         }
+        WM_FADE_TICK => with_state(State::fade_tick),
         WM_RELOAD => with_state(State::reload),
         WM_SUSPEND_HOTKEYS => with_state(|s| s.suspend_hotkeys(wparam != 0)),
         WM_SHUTDOWN => {
@@ -399,7 +402,7 @@ impl State {
         self.unregister_hotkeys();
         self.unstyle_all();
         self.dimmer = None;
-        self.dimmed_below = 0;
+        self.dim_key.clear();
         self.live.clear();
         PENDING.with(|p| p.borrow_mut().clear());
         PENDING_SINCE.set(None);
@@ -440,11 +443,11 @@ impl State {
         }
 
         if prev.dim_amount != next.dim_amount {
-            if let Some(dimmer) = &self.dimmer {
+            if let Some(dimmer) = &mut self.dimmer {
                 dimmer.set_amount(next.dim_amount);
             }
         }
-        if prev.dim_inactive != next.dim_inactive {
+        if prev.dim_inactive != next.dim_inactive || prev.dim_each_screen != next.dim_each_screen {
             self.sync_focus();
         }
 
@@ -677,22 +680,66 @@ impl State {
     }
 
     fn sync_dim(&mut self) {
-        let anchor = if self.cfg.enabled && self.cfg.dim_inactive { win::dim_anchor(ACTIVE.get()) } else { None };
-        let Some(anchor) = anchor else {
-            if let Some(dimmer) = &self.dimmer {
-                dimmer.hide();
-            }
-            self.dimmed_below = 0;
+        let on = self.cfg.enabled && self.cfg.dim_inactive;
+        if !on && self.dimmer.is_none() {
             return;
-        };
-        if self.dimmer.is_none() {
-            self.dimmer = dim::Dimmer::new(self.cfg.dim_amount);
         }
-        if let Some(dimmer) = &self.dimmer {
-            if anchor != self.dimmed_below {
-                dimmer.show_below(anchor);
-                self.dimmed_below = anchor;
+        let active = if on { win::dim_anchor(ACTIVE.get()) } else { None };
+        let active_screen = active.and_then(win::monitor).map(|m| m.handle);
+        let each = self.cfg.dim_each_screen && active.is_some();
+        let fronts = if each { front_windows() } else { HashMap::new() };
+        let targets: Vec<dim::Target> = win::monitors()
+            .into_iter()
+            .map(|monitor| {
+                let anchor = if !each || Some(monitor.handle) == active_screen {
+                    active
+                } else {
+                    fronts.get(&monitor.handle).copied()
+                };
+                dim::Target { monitor, anchor }
+            })
+            .collect();
+        let key: Vec<_> = targets.iter().map(|t| (t.monitor.handle, t.anchor)).collect();
+        if key == self.dim_key {
+            if let Some(dimmer) = &mut self.dimmer {
+                dimmer.fix_order();
             }
+            return;
+        }
+        self.dim_key = key;
+
+        // Where the windows being left behind are, to fade them out.
+        let leaving = self.dimmer.as_ref().map(|d| d.anchors()).unwrap_or_default();
+        let shapes: HashMap<isize, dim::Shape> =
+            leaving.into_iter().filter_map(|hwnd| Some((hwnd, self.window_shape(hwnd)?))).collect();
+        let (engine, amount) = (self.hwnd, self.cfg.dim_amount);
+        let dimmer = self.dimmer.get_or_insert_with(|| dim::Dimmer::new(engine, amount));
+        dimmer.update(targets, &|hwnd| shapes.get(&hwnd).copied());
+    }
+
+    /// A window's visible frame and the diameter of its rounded corners.
+    fn window_shape(&self, hwnd: isize) -> Option<dim::Shape> {
+        if !win::exists(hwnd) {
+            return None;
+        }
+        let frame = win::frame(hwnd)?.visible;
+        let scale = win::monitor(hwnd)?.scale;
+        let radius = if win::is_maximized(hwnd) {
+            0
+        } else if self.clipped.contains_key(&hwnd) {
+            self.cfg.clip_radius
+        } else if self.cfg.round_corners && self.cfg.corner_style == CornerStyle::Small {
+            4
+        } else {
+            // Windows 11's own rounding, and Fillet's "Rounded".
+            8
+        };
+        Some((frame, (radius as f64 * 2.0 * scale).round() as i32))
+    }
+
+    fn fade_tick(&mut self) {
+        if let Some(dimmer) = &mut self.dimmer {
+            dimmer.tick();
         }
     }
 
@@ -741,9 +788,6 @@ impl State {
         self.clipped.remove(&hwnd);
         if self.highlighted == hwnd {
             self.highlighted = 0;
-        }
-        if self.dimmed_below == hwnd {
-            self.dimmed_below = 0;
         }
         self.placed.remove(&hwnd);
         self.live.remove(&hwnd);
@@ -882,6 +926,20 @@ pub fn running_apps() -> Vec<RunningApp> {
         .collect();
     apps.sort_by(|a, b| a.exe.cmp(&b.exe));
     apps
+}
+
+/// The front window on each screen, by monitor.
+fn front_windows() -> HashMap<isize, isize> {
+    let mut fronts = HashMap::new();
+    // Top to bottom, so the first one found on a screen is its front.
+    for hwnd in win::top_level_windows() {
+        if win::dim_anchor(hwnd) == Some(hwnd) {
+            if let Some(monitor) = win::monitor(hwnd) {
+                fronts.entry(monitor.handle).or_insert(hwnd);
+            }
+        }
+    }
+    fronts
 }
 
 /// Margin and gap in physical pixels for a monitor's scale.

@@ -141,6 +141,9 @@ pub struct Config {
     pub dim_inactive: bool,
     /// How dark the shade is, in percent.
     pub dim_amount: u32,
+    /// Keep the front window on every screen bright, not just the active
+    /// one.
+    pub dim_each_screen: bool,
     /// Space between windows and the screen edge, in logical pixels.
     pub margin: u32,
     /// Space between neighbouring windows, in logical pixels.
@@ -171,6 +174,7 @@ impl Default for Config {
             highlight_color: "#5b6cf0".into(),
             dim_inactive: false,
             dim_amount: 25,
+            dim_each_screen: false,
             margin: 15,
             gap: 10,
             auto_tidy: false,

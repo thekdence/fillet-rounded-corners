@@ -34,6 +34,7 @@ export interface Config {
   highlightColor: string;
   dimInactive: boolean;
   dimAmount: number;
+  dimEachScreen: boolean;
   margin: number;
   gap: number;
   autoTidy: boolean;

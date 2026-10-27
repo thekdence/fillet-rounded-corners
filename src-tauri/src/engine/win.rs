@@ -9,13 +9,16 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, HWND, LPARAM, RECT},
     Graphics::{
         Dwm::{DwmGetColorizationColor, DwmGetWindowAttribute, DwmSetWindowAttribute},
-        Gdi::{CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, MonitorFromWindow, SetWindowRgn, MONITORINFO, MONITOR_DEFAULTTONEAREST},
+        Gdi::{
+            CreateRoundRectRgn, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, SetWindowRgn, HDC,
+            HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        },
     },
     System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
     UI::{
         HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
         WindowsAndMessaging::{
-            EnumWindows, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
+            EnumWindows, FindWindowExW, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
             GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow, IsWindowArranged, IsWindowVisible, IsZoomed,
             SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
             SWP_NOOWNERZORDER, SWP_NOZORDER, SW_SHOWNOACTIVATE,
@@ -276,8 +279,23 @@ pub struct Monitor {
 }
 
 pub fn monitor(hwnd: isize) -> Option<Monitor> {
+    monitor_info(unsafe { MonitorFromWindow(h(hwnd), MONITOR_DEFAULTTONEAREST) })
+}
+
+/// Every display, in no particular order.
+pub fn monitors() -> Vec<Monitor> {
+    unsafe extern "system" fn collect(hmon: HMONITOR, _: HDC, _: *mut RECT, list: LPARAM) -> windows_sys::core::BOOL {
+        let list = unsafe { &mut *(list as *mut Vec<Monitor>) };
+        list.extend(monitor_info(hmon));
+        1
+    }
+    let mut list: Vec<Monitor> = Vec::new();
+    unsafe { EnumDisplayMonitors(ptr::null_mut(), ptr::null(), Some(collect), ptr::addr_of_mut!(list) as LPARAM) };
+    list
+}
+
+fn monitor_info(hmon: HMONITOR) -> Option<Monitor> {
     unsafe {
-        let hmon = MonitorFromWindow(h(hwnd), MONITOR_DEFAULTTONEAREST);
         let mut info: MONITORINFO = mem::zeroed();
         info.cbSize = mem::size_of::<MONITORINFO>() as u32;
         if GetMonitorInfoW(hmon, &mut info) == 0 {
@@ -292,6 +310,23 @@ pub fn monitor(hwnd: isize) -> Option<Monitor> {
             scale: dpi_x.max(96) as f64 / 96.0,
         })
     }
+}
+
+/// The taskbar on every display.
+pub fn taskbars() -> Vec<isize> {
+    let mut found = Vec::new();
+    for class in ["Shell_TrayWnd\0", "Shell_SecondaryTrayWnd\0"] {
+        let class: Vec<u16> = class.encode_utf16().collect();
+        let mut after: HWND = ptr::null_mut();
+        loop {
+            after = unsafe { FindWindowExW(ptr::null_mut(), after, class.as_ptr(), ptr::null()) };
+            if after.is_null() {
+                break;
+            }
+            found.push(after as isize);
+        }
+    }
+    found
 }
 
 /// Bring a maximised or snapped window back to a normal, movable state
