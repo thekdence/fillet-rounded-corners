@@ -14,9 +14,12 @@
 //! at once (Windows has already raised it) and the old one eases down under
 //! a "ghost" cover shaped like it; then the screen's cover slips beneath the
 //! new window and the ghost goes, in one atomic step so nothing flickers.
-//! Fades are stepped at the display's refresh rate by a short-lived thread.
+//! Fades are stepped by a short-lived thread at the display's refresh rate,
+//! up to 60 a second: each opacity change is a fixed-cost trip through
+//! Windows, and a gentle fade looks no different at more.
 
 use std::{
+    cell::Cell,
     mem, ptr,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -32,10 +35,10 @@ use windows_sys::Win32::{
         Dwm::{DwmGetCompositionTimingInfo, DWM_TIMING_INFO},
         Gdi::{CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetStockObject, SetWindowRgn, BLACK_BRUSH, HBRUSH, NULLREGION, RGN_AND},
     },
-    System::LibraryLoader::GetModuleHandleW,
+    System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
     UI::WindowsAndMessaging::{
         BeginDeferWindowPos, CreateWindowExW, DefWindowProcW, DeferWindowPos, DestroyWindow, EndDeferWindowPos,
-        GetWindow, GetWindowRect, IsWindow, PostMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowPos,
+        GetWindow, GetWindowRect, GetWindowThreadProcessId, IsWindow, PostMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowPos,
         ShowWindow, GW_HWNDNEXT, GW_HWNDPREV, HWND_TOP, HWND_TOPMOST, LWA_ALPHA, SWP_HIDEWINDOW, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WNDCLASSW, WS_EX_LAYERED,
         WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
@@ -98,8 +101,15 @@ impl Dimmer {
                 },
             };
             let shade = &mut self.shades[index];
+            let area = cover_area(&target.monitor);
+            let resized = shade.area != area;
             shade.screen = target.monitor.monitor;
-            shade.area = cover_area(&target.monitor);
+            shade.area = area;
+            if resized && shade.below != 0 && !matches!(shade.anim, Anim::Handoff { .. }) {
+                // The display changed under a shade that's showing.
+                shade.cover_below(shade.below);
+                shade.place_bars(&bars);
+            }
             let old = shade.below;
             let shape = if old != 0 { shapes(old) } else { None };
             shade.retarget(target.anchor, shape, self.amount, &bars);
@@ -238,12 +248,29 @@ impl Shade {
         if self.below == 0 || matches!(self.anim, Anim::Handoff { .. }) {
             return;
         }
-        let next = unsafe { GetWindow(self.below as HWND, GW_HWNDNEXT) } as isize;
-        if next != self.cover.0 && unsafe { IsWindow(self.below as HWND) } != 0 {
+        // Other screens' covers sit beneath the same window, so step past
+        // any of ours (all made on this thread) before judging.
+        let mut next = unsafe { GetWindow(self.below as HWND, GW_HWNDNEXT) };
+        while !next.is_null() && next as isize != self.cover.0 && is_ours(next) {
+            next = unsafe { GetWindow(next, GW_HWNDNEXT) };
+        }
+        if next as isize != self.cover.0 && unsafe { IsWindow(self.below as HWND) } != 0 {
             let s = self.area;
             unsafe {
                 SetWindowPos(self.cover.0 as HWND, self.below as HWND, s.x, s.y, s.w, s.h, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
             }
+        }
+        // Windows re-asserts the taskbar's place from time to time.
+        let slipped = self.bars.iter().any(|(bar, overlay)| {
+            let mut above = unsafe { GetWindow(*bar as HWND, GW_HWNDPREV) };
+            while !above.is_null() && above as isize != overlay.0 && is_ours(above) {
+                above = unsafe { GetWindow(above, GW_HWNDPREV) };
+            }
+            above as isize != overlay.0
+        });
+        if slipped {
+            let bars: Vec<isize> = self.bars.iter().map(|(bar, _)| *bar).collect();
+            self.place_bars(&bars);
         }
     }
 
@@ -255,7 +282,7 @@ impl Shade {
             let clip = CreateRectRgn(s.x - frame.x, s.y - frame.y, s.right() - frame.x, s.bottom() - frame.y);
             let kind = CombineRgn(rgn, rgn, clip, RGN_AND);
             DeleteObject(clip);
-            if kind == NULLREGION as i32 || kind == 0 {
+            if kind == NULLREGION || kind == 0 {
                 DeleteObject(rgn);
                 return false;
             }
@@ -365,8 +392,11 @@ impl Shade {
 
     /// Jump to a new amount, e.g. while its slider is dragged.
     fn settle(&mut self, amount: f64) {
+        // A lifting shade keeps fading out.
+        if self.lifting() {
+            return;
+        }
         match self.anim {
-            Anim::Level { to, .. } if to == 0.0 => {}
             Anim::Level { .. } => {
                 self.anim = Anim::Idle;
                 self.set_level(amount);
@@ -422,6 +452,11 @@ fn ease(t: f64) -> f64 {
     }
 }
 
+/// One of the dimmer's own windows, which are all made on the engine thread.
+fn is_ours(hwnd: HWND) -> bool {
+    unsafe { GetWindowThreadProcessId(hwnd, ptr::null_mut()) == GetCurrentThreadId() }
+}
+
 fn cover_area(monitor: &win::Monitor) -> Rect {
     let (work, mut area) = (monitor.work, monitor.monitor);
     if work != area {
@@ -441,7 +476,7 @@ fn visible_part(r: &Rect, screen: &Rect) -> i32 {
 
 /// A black, click-through window that never takes focus or shows in the
 /// taskbar or Alt+Tab.
-struct Overlay(isize);
+struct Overlay(isize, Cell<Option<u8>>);
 
 impl Overlay {
     fn new() -> Option<Self> {
@@ -471,13 +506,15 @@ impl Overlay {
                 instance,
                 ptr::null(),
             );
-            (!hwnd.is_null()).then(|| Self(hwnd as isize))
+            (!hwnd.is_null()).then(|| Self(hwnd as isize, Cell::new(None)))
         }
     }
 
     fn alpha(&self, level: f64) {
         let alpha = (level.clamp(0.0, 1.0) * 255.0).round() as u8;
-        unsafe { SetLayeredWindowAttributes(self.0 as HWND, 0, alpha, LWA_ALPHA) };
+        if self.1.replace(Some(alpha)) != Some(alpha) {
+            unsafe { SetLayeredWindowAttributes(self.0 as HWND, 0, alpha, LWA_ALPHA) };
+        }
     }
 
     fn hide(&self) {
@@ -491,8 +528,8 @@ impl Drop for Overlay {
     }
 }
 
-/// Posts `WM_FADE_TICK` to the engine at the display's refresh rate while a
-/// fade runs. The thread only exists for the length of a fade.
+/// Posts `WM_FADE_TICK` to the engine once a frame while a fade runs. The
+/// thread only exists for the length of a fade.
 struct Ticker {
     engine: isize,
     /// Bumped to stop the running thread; a thread exits once it's stale.
@@ -510,10 +547,9 @@ impl Ticker {
             return;
         }
         let gen = self.generation.load(Ordering::SeqCst);
-        self.running = Some(gen);
         let (current, engine) = (self.generation.clone(), self.engine);
         let frame = refresh_period();
-        let _ = thread::Builder::new().name("fillet-fade".into()).spawn(move || {
+        let spawned = thread::Builder::new().name("fillet-fade".into()).spawn(move || {
             // Paced off the clock rather than DwmFlush, which waits for a
             // frame that a still desktop never draws.
             let mut next = Instant::now();
@@ -526,6 +562,9 @@ impl Ticker {
                 }
             }
         });
+        if spawned.is_ok() {
+            self.running = Some(gen);
+        }
     }
 
     fn stop(&mut self) {
@@ -535,16 +574,18 @@ impl Ticker {
     }
 }
 
-/// How long one frame lasts on the display, so fades step once per frame.
+/// How often to step a fade: once per display frame, but no more than 60
+/// times a second.
 fn refresh_period() -> Duration {
+    const MIN: Duration = Duration::from_micros(16_667);
     let mut info: DWM_TIMING_INFO = unsafe { mem::zeroed() };
     info.cbSize = mem::size_of::<DWM_TIMING_INFO>() as u32;
     let ok = unsafe { DwmGetCompositionTimingInfo(ptr::null_mut(), &mut info) } == 0;
     let hz = info.rateRefresh.uiNumerator as f64 / info.rateRefresh.uiDenominator.max(1) as f64;
     if ok && (30.0..=500.0).contains(&hz) {
-        Duration::from_secs_f64(1.0 / hz)
+        Duration::from_secs_f64(1.0 / hz).max(MIN)
     } else {
-        Duration::from_millis(8)
+        MIN
     }
 }
 

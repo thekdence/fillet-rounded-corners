@@ -20,7 +20,7 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-    System::LibraryLoader::GetModuleHandleW,
+    System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
     UI::{
         Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
         HiDpi::{SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2},
@@ -169,7 +169,7 @@ struct State {
     /// Shades the windows behind the active one, while that's turned on.
     dimmer: Option<dim::Dimmer>,
     /// What each screen's shade was last told to keep bright.
-    dim_key: Vec<(isize, Option<isize>)>,
+    dim_key: Vec<(isize, Rect, Option<isize>)>,
     /// Where automatic tidying last put each window and when, so a window
     /// that refuses a size can't send us into a loop.
     placed: HashMap<isize, (Rect, Instant)>,
@@ -253,7 +253,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_state(State::settle)
         }
         WM_HOTKEY => {
-            let action = Action::ALL.get((wparam as usize).wrapping_sub(1)).copied();
+            let action = Action::ALL.get(wparam.wrapping_sub(1)).copied();
             with_state(|s| {
                 if let Some(a) = action {
                     s.run(a);
@@ -309,12 +309,12 @@ unsafe extern "system" fn on_event(
     hwnd: HWND,
     id_object: i32,
     id_child: i32,
-    _thread: u32,
+    thread: u32,
     _time: u32,
 ) {
     // OBJID_WINDOW / CHILDID_SELF: the window itself, not a caret, cursor or
-    // control inside it.
-    if hwnd.is_null() || id_object != 0 || id_child != 0 {
+    // control inside it. Windows this thread made are the dimmer's own.
+    if hwnd.is_null() || id_object != 0 || id_child != 0 || thread == unsafe { GetCurrentThreadId() } {
         return;
     }
     let id = hwnd as isize;
@@ -687,8 +687,9 @@ impl State {
         let active = if on { win::dim_anchor(ACTIVE.get()) } else { None };
         let active_screen = active.and_then(win::monitor).map(|m| m.handle);
         let each = self.cfg.dim_each_screen && active.is_some();
-        let fronts = if each { front_windows() } else { HashMap::new() };
-        let targets: Vec<dim::Target> = win::monitors()
+        let monitors = win::monitors();
+        let fronts = if each { front_windows(monitors.len()) } else { HashMap::new() };
+        let targets: Vec<dim::Target> = monitors
             .into_iter()
             .map(|monitor| {
                 let anchor = if !each || Some(monitor.handle) == active_screen {
@@ -699,7 +700,7 @@ impl State {
                 dim::Target { monitor, anchor }
             })
             .collect();
-        let key: Vec<_> = targets.iter().map(|t| (t.monitor.handle, t.anchor)).collect();
+        let key: Vec<_> = targets.iter().map(|t| (t.monitor.handle, t.monitor.work, t.anchor)).collect();
         if key == self.dim_key {
             if let Some(dimmer) = &mut self.dimmer {
                 dimmer.fix_order();
@@ -929,13 +930,16 @@ pub fn running_apps() -> Vec<RunningApp> {
 }
 
 /// The front window on each screen, by monitor.
-fn front_windows() -> HashMap<isize, isize> {
+fn front_windows(screens: usize) -> HashMap<isize, isize> {
     let mut fronts = HashMap::new();
     // Top to bottom, so the first one found on a screen is its front.
     for hwnd in win::top_level_windows() {
         if win::dim_anchor(hwnd) == Some(hwnd) {
             if let Some(monitor) = win::monitor(hwnd) {
                 fronts.entry(monitor.handle).or_insert(hwnd);
+                if fronts.len() == screens {
+                    break;
+                }
             }
         }
     }

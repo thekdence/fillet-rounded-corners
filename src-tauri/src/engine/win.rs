@@ -377,7 +377,7 @@ pub fn set_border(hwnd: isize, color: u32) -> bool {
 pub fn accent_color() -> Option<(u8, u8, u8)> {
     let (mut argb, mut opaque) = (0u32, 0);
     let ok = unsafe { DwmGetColorizationColor(&mut argb, &mut opaque) } == 0;
-    ok.then(|| ((argb >> 16) as u8, (argb >> 8) as u8, argb as u8))
+    ok.then_some(((argb >> 16) as u8, (argb >> 8) as u8, argb as u8))
 }
 
 /// Round a window by clipping it to a rounded region, for apps that ignore
